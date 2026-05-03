@@ -108,7 +108,7 @@ fn resolve_tools(
     winrar_path: Option<String>,
     sevenz_path: Option<String>,
 ) -> Result<ToolStatus, String> {
-    let winrar = resolve_rar_tool_path(
+    let winrar = resolve_winrar_tool_path(
         winrar_path
             .as_deref()
             .filter(|value| !value.trim().is_empty())
@@ -256,7 +256,7 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
         return Err("文章 ID 必须填写，并且只能是数字".to_string());
     }
 
-    let winrar_path = resolve_rar_tool_path(&options.winrar_path);
+    let winrar_path = resolve_winrar_tool_path(&options.winrar_path);
     if !winrar_path.exists() {
         return Err(format!(
             "找不到 WinRAR/Rar.exe：{}",
@@ -844,22 +844,22 @@ fn resolve_tool_path(path: &str, executable_name: &str) -> PathBuf {
     }
 }
 
-fn resolve_rar_tool_path(path: &str) -> PathBuf {
+fn resolve_winrar_tool_path(path: &str) -> PathBuf {
     let candidate = normalize_path(path);
 
     if candidate.is_dir() {
-        let rar = candidate.join("Rar.exe");
-        if rar.exists() {
-            return rar;
+        let winrar = candidate.join("WinRAR.exe");
+        if winrar.exists() {
+            return winrar;
         }
-        return candidate.join("WinRAR.exe");
+        return candidate.join("Rar.exe");
     }
 
-    if is_winrar_gui(&candidate) {
+    if is_rar_console(&candidate) {
         if let Some(parent) = candidate.parent() {
-            let rar = parent.join("Rar.exe");
-            if rar.exists() {
-                return rar;
+            let winrar = parent.join("WinRAR.exe");
+            if winrar.exists() {
+                return winrar;
             }
         }
     }
@@ -870,6 +870,12 @@ fn resolve_rar_tool_path(path: &str) -> PathBuf {
 fn is_winrar_gui(path: &Path) -> bool {
     path.file_name()
         .map(|name| name.to_string_lossy().eq_ignore_ascii_case("WinRAR.exe"))
+        .unwrap_or(false)
+}
+
+fn is_rar_console(path: &Path) -> bool {
+    path.file_name()
+        .map(|name| name.to_string_lossy().eq_ignore_ascii_case("Rar.exe"))
         .unwrap_or(false)
 }
 
@@ -1129,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn prefers_rar_exe_next_to_winrar_exe() {
+    fn prefers_winrar_exe_next_to_rar_exe() {
         let dir =
             std::env::temp_dir().join(format!("folder-compression-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -1140,7 +1146,7 @@ mod tests {
         fs::write(&winrar, "").expect("WinRAR marker should be written");
         fs::write(&rar, "").expect("RAR marker should be written");
 
-        assert_eq!(resolve_rar_tool_path(&winrar.to_string_lossy()), rar);
+        assert_eq!(resolve_winrar_tool_path(&rar.to_string_lossy()), winrar);
 
         let _ = fs::remove_dir_all(&dir);
     }
