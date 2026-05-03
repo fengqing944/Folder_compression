@@ -93,6 +93,7 @@ struct CompressionReport {
     rar_files: Vec<String>,
     sevenz_file: Option<String>,
     deleted_rar: bool,
+    cleaned_outputs: Vec<String>,
     folder_size_bytes: u64,
     folder_size_mb: f64,
     used_split_volume: bool,
@@ -107,12 +108,11 @@ fn resolve_tools(
     winrar_path: Option<String>,
     sevenz_path: Option<String>,
 ) -> Result<ToolStatus, String> {
-    let winrar = resolve_tool_path(
+    let winrar = resolve_rar_tool_path(
         winrar_path
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(DEFAULT_WINRAR_PATH),
-        "WinRAR.exe",
     );
     let sevenz = resolve_tool_path(
         sevenz_path
@@ -256,9 +256,12 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
         return Err("文章 ID 必须填写，并且只能是数字".to_string());
     }
 
-    let winrar_path = resolve_tool_path(&options.winrar_path, "WinRAR.exe");
+    let winrar_path = resolve_rar_tool_path(&options.winrar_path);
     if !winrar_path.exists() {
-        return Err(format!("找不到 WinRAR：{}", winrar_path.to_string_lossy()));
+        return Err(format!(
+            "找不到 WinRAR/Rar.exe：{}",
+            winrar_path.to_string_lossy()
+        ));
     }
 
     let sevenz_path = resolve_tool_path(&options.sevenz_path, "7z.exe");
@@ -301,8 +304,16 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
     let sevenz_output = output_dir.join(format!("{archive_base}.7z"));
 
     let mut steps = Vec::new();
+    let cleaned_outputs =
+        cleanup_previous_outputs(&output_dir, &archive_base, &rar_output, &sevenz_output)?;
 
-    let rar_args = build_rar_args(&options, &rar_output, &source_path, used_split_volume);
+    let rar_args = build_rar_args(
+        &options,
+        &winrar_path,
+        &rar_output,
+        &source_path,
+        used_split_volume,
+    )?;
     let rar_step = run_command(
         "WinRAR",
         &winrar_path,
@@ -373,6 +384,10 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
             .collect(),
         sevenz_file,
         deleted_rar,
+        cleaned_outputs: cleaned_outputs
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
         folder_size_bytes,
         folder_size_mb: bytes_to_mb(folder_size_bytes),
         used_split_volume,
@@ -600,10 +615,11 @@ fn compose_archive_stem(prefix: &str, article_id: &str) -> String {
 
 fn build_rar_args(
     options: &CompressionOptions,
+    program: &Path,
     rar_output: &Path,
     source_path: &Path,
     used_split_volume: bool,
-) -> Vec<OsString> {
+) -> Result<Vec<OsString>, String> {
     let mut args = vec![
         OsString::from("a"),
         OsString::from("-ep1"),
@@ -614,22 +630,18 @@ fn build_rar_args(
         OsString::from("-x*~"),
     ];
 
-    if options.background_mode {
+    if options.background_mode && is_winrar_gui(program) {
         args.push(OsString::from("-ibck"));
     }
 
     if used_split_volume {
-        let volume_size = if options.volume_size.trim().is_empty() {
-            "500m"
-        } else {
-            options.volume_size.trim()
-        };
+        let volume_size = normalize_volume_size(&options.volume_size)?;
         args.push(OsString::from(format!("-v{volume_size}")));
     }
 
     args.push(rar_output.as_os_str().to_os_string());
     args.push(source_path.as_os_str().to_os_string());
-    args
+    Ok(args)
 }
 
 fn build_7z_args(sevenz_output: &Path, rar_files: &[PathBuf], password: &str) -> Vec<OsString> {
@@ -740,6 +752,60 @@ fn collect_rar_outputs(
     Ok(files)
 }
 
+fn cleanup_previous_outputs(
+    output_dir: &Path,
+    archive_base: &str,
+    rar_output: &Path,
+    sevenz_output: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    let mut targets = Vec::new();
+
+    if rar_output.exists() {
+        targets.push(rar_output.to_path_buf());
+    }
+
+    if sevenz_output.exists() {
+        targets.push(sevenz_output.to_path_buf());
+    }
+
+    let part_prefix = format!("{archive_base}.part");
+    let entries = fs::read_dir(output_dir).map_err(|err| {
+        format!(
+            "读取输出文件夹失败：{} ({err})",
+            output_dir.to_string_lossy()
+        )
+    })?;
+
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("读取旧输出文件失败：{err}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let Some(file_name) = path
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+        else {
+            continue;
+        };
+
+        if file_name.starts_with(&part_prefix) && file_name.ends_with(".rar") {
+            targets.push(path);
+        }
+    }
+
+    targets.sort();
+    targets.dedup();
+
+    for target in &targets {
+        fs::remove_file(target)
+            .map_err(|err| format!("清理旧输出文件失败：{} ({err})", target.to_string_lossy()))?;
+    }
+
+    Ok(targets)
+}
+
 fn folder_size(path: &Path) -> Result<u64, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|err| format!("读取路径失败：{} ({err})", path.to_string_lossy()))?;
@@ -776,6 +842,71 @@ fn resolve_tool_path(path: &str, executable_name: &str) -> PathBuf {
     } else {
         candidate
     }
+}
+
+fn resolve_rar_tool_path(path: &str) -> PathBuf {
+    let candidate = normalize_path(path);
+
+    if candidate.is_dir() {
+        let rar = candidate.join("Rar.exe");
+        if rar.exists() {
+            return rar;
+        }
+        return candidate.join("WinRAR.exe");
+    }
+
+    if is_winrar_gui(&candidate) {
+        if let Some(parent) = candidate.parent() {
+            let rar = parent.join("Rar.exe");
+            if rar.exists() {
+                return rar;
+            }
+        }
+    }
+
+    candidate
+}
+
+fn is_winrar_gui(path: &Path) -> bool {
+    path.file_name()
+        .map(|name| name.to_string_lossy().eq_ignore_ascii_case("WinRAR.exe"))
+        .unwrap_or(false)
+}
+
+fn normalize_volume_size(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok("500m".to_string());
+    }
+
+    let mut chars = value.chars().peekable();
+    let mut digits = String::new();
+
+    while let Some(ch) = chars.peek().copied() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+
+    let Some(unit) = chars.next() else {
+        return Err("分卷大小需要带单位，例如 500m、1g、102400k".to_string());
+    };
+
+    if chars.next().is_some()
+        || digits.is_empty()
+        || digits.chars().all(|ch| ch == '0')
+        || !matches!(
+            unit,
+            'b' | 'B' | 'k' | 'K' | 'm' | 'M' | 'g' | 'G' | 't' | 'T'
+        )
+    {
+        return Err("分卷大小格式不正确，请使用 500m、1g、102400k 这类格式".to_string());
+    }
+
+    Ok(format!("{}{}", digits, unit))
 }
 
 fn ensure_folder(path: &Path) -> Result<(), String> {
@@ -935,12 +1066,112 @@ mod tests {
 
         let args = build_rar_args(
             &options,
+            Path::new("Rar.exe"),
             Path::new("output.rar"),
             Path::new("source-folder"),
             false,
-        );
+        )
+        .expect("RAR args should build");
 
         assert!(args.iter().any(|arg| arg == "-t"));
+    }
+
+    #[test]
+    fn rar_args_skip_winrar_background_switch_for_console_rar() {
+        let options = CompressionOptions {
+            source_path: String::new(),
+            article_id: String::new(),
+            winrar_path: String::new(),
+            sevenz_path: String::new(),
+            second_compression: false,
+            delete_rar: false,
+            background_mode: true,
+            split_volume: false,
+            create_folder: false,
+            force_create_folder: false,
+            volume_size: "500m".to_string(),
+            sevenz_password: String::new(),
+            prefix_rules: Vec::new(),
+        };
+
+        let rar_args = build_rar_args(
+            &options,
+            Path::new("Rar.exe"),
+            Path::new("output.rar"),
+            Path::new("source-folder"),
+            false,
+        )
+        .expect("RAR args should build");
+        let winrar_args = build_rar_args(
+            &options,
+            Path::new("WinRAR.exe"),
+            Path::new("output.rar"),
+            Path::new("source-folder"),
+            false,
+        )
+        .expect("WinRAR args should build");
+
+        assert!(!rar_args.iter().any(|arg| arg == "-ibck"));
+        assert!(winrar_args.iter().any(|arg| arg == "-ibck"));
+    }
+
+    #[test]
+    fn validates_volume_size_format() {
+        assert_eq!(normalize_volume_size("").unwrap(), "500m");
+        assert_eq!(normalize_volume_size("500m").unwrap(), "500m");
+        assert_eq!(normalize_volume_size("1g").unwrap(), "1g");
+        assert_eq!(normalize_volume_size("102400k").unwrap(), "102400k");
+
+        assert!(normalize_volume_size("500").is_err());
+        assert!(normalize_volume_size("abc").is_err());
+        assert!(normalize_volume_size("0m").is_err());
+        assert!(normalize_volume_size("500 mb").is_err());
+    }
+
+    #[test]
+    fn prefers_rar_exe_next_to_winrar_exe() {
+        let dir =
+            std::env::temp_dir().join(format!("folder-compression-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+
+        let winrar = dir.join("WinRAR.exe");
+        let rar = dir.join("Rar.exe");
+        fs::write(&winrar, "").expect("WinRAR marker should be written");
+        fs::write(&rar, "").expect("RAR marker should be written");
+
+        assert_eq!(resolve_rar_tool_path(&winrar.to_string_lossy()), rar);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_previous_outputs_removes_stale_archives() {
+        let dir = std::env::temp_dir().join(format!(
+            "folder-compression-cleanup-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+
+        let rar = dir.join("demo_1.rar");
+        let sevenz = dir.join("demo_1.7z");
+        let part = dir.join("demo_1.part1.rar");
+        let unrelated = dir.join("demo_1-note.rar");
+        for file in [&rar, &sevenz, &part, &unrelated] {
+            fs::write(file, "old").expect("old output should be written");
+        }
+
+        let cleaned = cleanup_previous_outputs(&dir, "demo_1", &rar, &sevenz)
+            .expect("cleanup should succeed");
+
+        assert_eq!(cleaned.len(), 3);
+        assert!(!rar.exists());
+        assert!(!sevenz.exists());
+        assert!(!part.exists());
+        assert!(unrelated.exists());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -960,6 +1191,7 @@ mod tests {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {

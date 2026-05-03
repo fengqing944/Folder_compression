@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   Archive,
@@ -60,6 +65,7 @@ type CompressionReport = {
   rarFiles: string[];
   sevenzFile: string | null;
   deletedRar: boolean;
+  cleanedOutputs: string[];
   folderSizeBytes: number;
   folderSizeMb: number;
   usedSplitVolume: boolean;
@@ -79,6 +85,7 @@ const defaultWinrarPath = "G:\\Software\\WinRAR\\WinRAR.exe";
 const defaultSevenzPath = "C:\\Program Files\\7-Zip\\7z.exe";
 
 function App() {
+  const folderRequestId = useRef(0);
   const [activeTab, setActiveTab] = useState<"task" | "prefix" | "settings">("task");
   const [sourcePath, setSourcePath] = useState("");
   const [articleId, setArticleId] = useState("");
@@ -115,6 +122,13 @@ function App() {
     if (!articleId.trim()) return "填写文章 ID 后预览文件名";
     return prefixPreview?.rarFileName ?? "正在匹配";
   }, [articleId, prefixPreview, preview]);
+
+  const volumeSizeError = useMemo(() => {
+    if (!splitVolume) return "";
+    return isValidVolumeSize(volumeSize)
+      ? ""
+      : "分卷大小格式不正确，请使用 500m、1g、102400k 这类格式";
+  }, [splitVolume, volumeSize]);
 
   const filteredRules = useMemo(() => {
     const keyword = ruleSearch.trim().toLowerCase();
@@ -292,15 +306,22 @@ function App() {
   }
 
   async function loadFolder(path: string, announce = true) {
+    const requestId = folderRequestId.current + 1;
+    folderRequestId.current = requestId;
     setSourcePath(path);
+
     try {
       const nextPreview = await invoke<FolderPreview>("inspect_folder", { path });
+      if (requestId !== folderRequestId.current) return;
+
       setPreview(nextPreview);
       if (announce) {
         setReport(null);
         appendLog(`已选择：${nextPreview.name}（${formatSize(nextPreview.sizeBytes)}）`);
       }
     } catch (error) {
+      if (requestId !== folderRequestId.current) return;
+
       setPreview(null);
       if (announce) {
         appendLog(`选择失败：${String(error)}`);
@@ -319,6 +340,11 @@ function App() {
 
     if (!articleId.trim()) {
       appendLog("文章 ID 必填。");
+      return;
+    }
+
+    if (volumeSizeError) {
+      appendLog(volumeSizeError);
       return;
     }
 
@@ -347,6 +373,9 @@ function App() {
       setReport(result);
       appendLog(`压缩完成：${result.outputDirectory}`);
       appendLog(`压缩包名称：${result.archiveStem}`);
+      if (result.cleanedOutputs.length > 0) {
+        appendLog(`已清理旧输出文件：${result.cleanedOutputs.length} 个。`);
+      }
       if (result.matchedKeyword) {
         appendLog(`命中前缀规则：${result.matchedKeyword} -> ${result.archivePrefix}`);
       }
@@ -359,14 +388,18 @@ function App() {
       if (result.deletedRar) {
         appendLog("已删除中间 RAR 文件。");
       }
+      void sendSystemNotification("压缩完成", `${result.archiveStem} 已生成。`);
     } catch (error) {
-      appendLog(`压缩失败：${String(error)}`);
+      const message = String(error);
+      appendLog(`压缩失败：${message}`);
+      void sendSystemNotification("压缩失败", "查看任务日志获取详情。");
     } finally {
       setRunning(false);
     }
   }
 
   function resetTask() {
+    folderRequestId.current += 1;
     setSourcePath("");
     setPreview(null);
     setPrefixPreview(null);
@@ -377,6 +410,21 @@ function App() {
   function appendLog(message: string) {
     const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
     setLogs((current) => [`${time}  ${message}`, ...current].slice(0, 80));
+  }
+
+  async function sendSystemNotification(title: string, body: string) {
+    try {
+      let granted = await isPermissionGranted();
+      if (!granted) {
+        granted = (await requestPermission()) === "granted";
+      }
+
+      if (granted) {
+        sendNotification({ title, body });
+      }
+    } catch (error) {
+      appendLog(`系统通知发送失败：${String(error)}`);
+    }
   }
 
   return (
@@ -462,7 +510,12 @@ function App() {
                 </label>
                 <label className="field">
                   <span>分卷大小</span>
-                  <input value={volumeSize} onChange={(event) => setVolumeSize(event.currentTarget.value)} />
+                  <input
+                    className={volumeSizeError ? "invalid" : ""}
+                    value={volumeSize}
+                    onChange={(event) => setVolumeSize(event.currentTarget.value)}
+                  />
+                  {volumeSizeError && <small className="field-error">{volumeSizeError}</small>}
                 </label>
               </div>
 
@@ -779,6 +832,10 @@ function sanitizePrefixInput(value: string) {
     .trim()
     .replace(/^\.+|\.+$/g, "")
     .replace(/^[-_]+|[-_]+$/g, "");
+}
+
+function isValidVolumeSize(value: string) {
+  return /^[1-9]\d*[bBkKmMgGtT]$/.test(value.trim());
 }
 
 function formatSize(bytes: number) {
