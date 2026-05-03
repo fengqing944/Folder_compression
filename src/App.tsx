@@ -13,6 +13,7 @@ import {
   CheckCircle2,
   FolderArchive,
   FolderOpen,
+  KeyRound,
   Layers,
   Play,
   Plus,
@@ -98,6 +99,8 @@ function App() {
   const [createFolder, setCreateFolder] = useState(true);
   const [forceCreateFolder, setForceCreateFolder] = useState(false);
   const [volumeSize, setVolumeSize] = useState("500m");
+  const [rarPassword, setRarPassword] = useState("moeuu.xyz");
+  const [encryptFileNames, setEncryptFileNames] = useState(true);
   const [sevenzPassword, setSevenzPassword] = useState("moeuu.xyz");
   const [dragActive, setDragActive] = useState(false);
   const [running, setRunning] = useState(false);
@@ -358,6 +361,8 @@ function App() {
           articleId,
           winrarPath,
           sevenzPath,
+          rarPassword,
+          encryptFileNames,
           secondCompression,
           deleteRar,
           backgroundMode,
@@ -436,11 +441,11 @@ function App() {
           </div>
           <div>
             <h1>文件夹压缩工具</h1>
-            <p>WinRAR / 7-Zip 压缩工作台</p>
+            <p>RAR / 7-Zip 压缩工作台</p>
           </div>
         </div>
         <div className="header-tools">
-          <ToolBadge ok={tools?.winrarExists ?? false} label="WinRAR" />
+          <ToolBadge ok={tools?.winrarExists ?? false} label="RAR" />
           <ToolBadge ok={tools?.sevenzExists ?? false} label="7-Zip" />
           <button className="toolbar-button" type="button" onClick={refreshTools}>
             <RotateCcw size={16} />
@@ -540,7 +545,7 @@ function App() {
             </section>
 
             <section className="module settings-module">
-              <ModuleHeader index="2" title="压缩设置" detail="默认使用 WinRAR，可选 7-Zip 二次压缩" />
+              <ModuleHeader index="2" title="压缩设置" detail="默认使用 RAR 命令行，可选 7-Zip 二次压缩" />
 
               <div className="option-grid">
                 <OptionToggle
@@ -586,17 +591,38 @@ function App() {
                   checked={forceCreateFolder}
                   onChange={setForceCreateFolder}
                 />
+                <OptionToggle
+                  icon={<KeyRound size={17} />}
+                  title="加密文件名"
+                  description="RAR 内文件名隐藏"
+                  checked={encryptFileNames}
+                  onChange={setEncryptFileNames}
+                />
               </div>
 
-              {secondCompression && (
+              <div className={`password-grid ${secondCompression ? "" : "single"}`}>
                 <label className="field">
-                  <span>7z 密码</span>
+                  <span>RAR 密码</span>
                   <input
-                    value={sevenzPassword}
-                    onChange={(event) => setSevenzPassword(event.currentTarget.value)}
+                    type="password"
+                    value={rarPassword}
+                    onChange={(event) => setRarPassword(event.currentTarget.value)}
+                    placeholder="不填写则不加密 RAR"
                   />
                 </label>
-              )}
+
+                {secondCompression && (
+                  <label className="field">
+                    <span>7z 密码</span>
+                    <input
+                      type="password"
+                      value={sevenzPassword}
+                      onChange={(event) => setSevenzPassword(event.currentTarget.value)}
+                      placeholder="不填写则使用默认密码"
+                    />
+                  </label>
+                )}
+              </div>
             </section>
           </div>
         )}
@@ -693,7 +719,7 @@ function App() {
             <section className="module path-module">
               <ModuleHeader index="路径" title="程序路径" detail="可直接填写 exe，或填写安装目录" />
               <label className="field compact">
-                <span>WinRAR</span>
+                <span>WinRAR/RAR</span>
                 <input value={winrarPath} onChange={(event) => setWinrarPath(event.currentTarget.value)} />
               </label>
               <label className="field compact">

@@ -1,6 +1,6 @@
 # 文件夹压缩工具
 
-一个 Tauri 桌面小工具，用 WinRAR 将拖入的文件夹压缩成 RAR，并可选使用 7-Zip 做二次压缩。
+一个 Tauri 桌面小工具，用 RAR 命令行将拖入的文件夹压缩成 RAR，并可选使用 7-Zip 做二次压缩。
 
 ## 功能
 
@@ -11,16 +11,17 @@
 - 支持导入旧版 `keyword_mappings.json`，兼容 `"关键词": "前缀_"` 格式。
 - 支持二次压缩：先生成 RAR，再把 RAR 或 RAR 分卷打包成 7z。
 - 支持删除中间 RAR，只保留 7z。
-- 支持后台模式，隐藏 WinRAR 和 7-Zip 窗口。
+- 支持后台模式，隐藏 RAR/WinRAR 和 7-Zip 窗口。
+- 支持显式 RAR 密码、加密文件名，并在压缩后测试 RAR 压缩包。
 - 支持超过 500MB 后按 500MB 分卷。
 - 压缩前会清理同名旧 RAR、7z 和 RAR 分卷，避免旧文件残留到新压缩包。
-- 默认使用 `WinRAR.exe`，优先尊重你的 WinRAR 默认配置；找不到时再回退同目录的 `Rar.exe`。
+- 默认优先使用 `Rar.exe` 执行压缩，密码、加密文件名和测试压缩包都由程序显式传参；找不到时回退 `WinRAR.exe`。
 - 分卷大小会校验格式，例如 `500m`、`1g`、`102400k`。
 - 压缩完成或失败后发送系统通知。
 - 使用 Tabs 区分压缩任务、前缀规则、路径与日志。
 - 自动保存并恢复窗口位置、大小和最大化状态。
 - 默认工具路径：
-  - WinRAR：`G:\Software\WinRAR\WinRAR.exe`
+  - WinRAR/RAR：`G:\Software\WinRAR\WinRAR.exe`
   - 7-Zip：`C:\Program Files\7-Zip\7z.exe`
 
 ## 开发

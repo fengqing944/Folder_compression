@@ -64,6 +64,8 @@ struct CompressionOptions {
     article_id: String,
     winrar_path: String,
     sevenz_path: String,
+    rar_password: String,
+    encrypt_file_names: bool,
     second_compression: bool,
     delete_rar: bool,
     background_mode: bool,
@@ -108,7 +110,7 @@ fn resolve_tools(
     winrar_path: Option<String>,
     sevenz_path: Option<String>,
 ) -> Result<ToolStatus, String> {
-    let winrar = resolve_winrar_tool_path(
+    let winrar = resolve_rar_tool_path(
         winrar_path
             .as_deref()
             .filter(|value| !value.trim().is_empty())
@@ -256,7 +258,7 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
         return Err("文章 ID 必须填写，并且只能是数字".to_string());
     }
 
-    let winrar_path = resolve_winrar_tool_path(&options.winrar_path);
+    let winrar_path = resolve_rar_tool_path(&options.winrar_path);
     if !winrar_path.exists() {
         return Err(format!(
             "找不到 WinRAR/Rar.exe：{}",
@@ -306,6 +308,7 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
     let mut steps = Vec::new();
     let cleaned_outputs =
         cleanup_previous_outputs(&output_dir, &archive_base, &rar_output, &sevenz_output)?;
+    let rar_password = options.rar_password.trim();
 
     let rar_args = build_rar_args(
         &options,
@@ -315,17 +318,21 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
         used_split_volume,
     )?;
     let rar_step = run_command(
-        "WinRAR",
+        "RAR",
         &winrar_path,
         &rar_args,
         options.background_mode,
-        None,
+        if rar_password.is_empty() {
+            None
+        } else {
+            Some(rar_password)
+        },
     )?;
     steps.push(rar_step);
 
     let rar_files = collect_rar_outputs(&output_dir, &archive_base, &rar_output)?;
     if rar_files.is_empty() {
-        return Err("WinRAR 已结束，但没有找到生成的 RAR 文件".to_string());
+        return Err("RAR 已结束，但没有找到生成的 RAR 文件".to_string());
     }
 
     let mut sevenz_file = None;
@@ -634,6 +641,16 @@ fn build_rar_args(
         args.push(OsString::from("-ibck"));
     }
 
+    let password = options.rar_password.trim();
+    if !password.is_empty() {
+        let switch = if options.encrypt_file_names {
+            "-hp"
+        } else {
+            "-p"
+        };
+        args.push(OsString::from(format!("{switch}{password}")));
+    }
+
     if used_split_volume {
         let volume_size = normalize_volume_size(&options.volume_size)?;
         args.push(OsString::from(format!("-v{volume_size}")));
@@ -844,22 +861,22 @@ fn resolve_tool_path(path: &str, executable_name: &str) -> PathBuf {
     }
 }
 
-fn resolve_winrar_tool_path(path: &str) -> PathBuf {
+fn resolve_rar_tool_path(path: &str) -> PathBuf {
     let candidate = normalize_path(path);
 
     if candidate.is_dir() {
-        let winrar = candidate.join("WinRAR.exe");
-        if winrar.exists() {
-            return winrar;
+        let rar = candidate.join("Rar.exe");
+        if rar.exists() {
+            return rar;
         }
-        return candidate.join("Rar.exe");
+        return candidate.join("WinRAR.exe");
     }
 
-    if is_rar_console(&candidate) {
+    if is_winrar_gui(&candidate) {
         if let Some(parent) = candidate.parent() {
-            let winrar = parent.join("WinRAR.exe");
-            if winrar.exists() {
-                return winrar;
+            let rar = parent.join("Rar.exe");
+            if rar.exists() {
+                return rar;
             }
         }
     }
@@ -870,12 +887,6 @@ fn resolve_winrar_tool_path(path: &str) -> PathBuf {
 fn is_winrar_gui(path: &Path) -> bool {
     path.file_name()
         .map(|name| name.to_string_lossy().eq_ignore_ascii_case("WinRAR.exe"))
-        .unwrap_or(false)
-}
-
-fn is_rar_console(path: &Path) -> bool {
-    path.file_name()
-        .map(|name| name.to_string_lossy().eq_ignore_ascii_case("Rar.exe"))
         .unwrap_or(false)
 }
 
@@ -1059,6 +1070,8 @@ mod tests {
             article_id: String::new(),
             winrar_path: String::new(),
             sevenz_path: String::new(),
+            rar_password: String::new(),
+            encrypt_file_names: true,
             second_compression: false,
             delete_rar: false,
             background_mode: false,
@@ -1089,6 +1102,8 @@ mod tests {
             article_id: String::new(),
             winrar_path: String::new(),
             sevenz_path: String::new(),
+            rar_password: String::new(),
+            encrypt_file_names: true,
             second_compression: false,
             delete_rar: false,
             background_mode: true,
@@ -1135,7 +1150,73 @@ mod tests {
     }
 
     #[test]
-    fn prefers_winrar_exe_next_to_rar_exe() {
+    fn rar_args_encrypt_file_names_with_header_password_switch() {
+        let options = CompressionOptions {
+            source_path: String::new(),
+            article_id: String::new(),
+            winrar_path: String::new(),
+            sevenz_path: String::new(),
+            rar_password: "secret".to_string(),
+            encrypt_file_names: true,
+            second_compression: false,
+            delete_rar: false,
+            background_mode: false,
+            split_volume: false,
+            create_folder: false,
+            force_create_folder: false,
+            volume_size: "500m".to_string(),
+            sevenz_password: String::new(),
+            prefix_rules: Vec::new(),
+        };
+
+        let args = build_rar_args(
+            &options,
+            Path::new("Rar.exe"),
+            Path::new("output.rar"),
+            Path::new("source-folder"),
+            false,
+        )
+        .expect("RAR args should build");
+
+        assert!(args.iter().any(|arg| arg == "-hpsecret"));
+        assert!(!args.iter().any(|arg| arg == "-psecret"));
+    }
+
+    #[test]
+    fn rar_args_can_encrypt_data_without_file_names() {
+        let options = CompressionOptions {
+            source_path: String::new(),
+            article_id: String::new(),
+            winrar_path: String::new(),
+            sevenz_path: String::new(),
+            rar_password: "secret".to_string(),
+            encrypt_file_names: false,
+            second_compression: false,
+            delete_rar: false,
+            background_mode: false,
+            split_volume: false,
+            create_folder: false,
+            force_create_folder: false,
+            volume_size: "500m".to_string(),
+            sevenz_password: String::new(),
+            prefix_rules: Vec::new(),
+        };
+
+        let args = build_rar_args(
+            &options,
+            Path::new("Rar.exe"),
+            Path::new("output.rar"),
+            Path::new("source-folder"),
+            false,
+        )
+        .expect("RAR args should build");
+
+        assert!(args.iter().any(|arg| arg == "-psecret"));
+        assert!(!args.iter().any(|arg| arg == "-hpsecret"));
+    }
+
+    #[test]
+    fn prefers_rar_exe_next_to_winrar_exe() {
         let dir =
             std::env::temp_dir().join(format!("folder-compression-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -1146,7 +1227,7 @@ mod tests {
         fs::write(&winrar, "").expect("WinRAR marker should be written");
         fs::write(&rar, "").expect("RAR marker should be written");
 
-        assert_eq!(resolve_winrar_tool_path(&rar.to_string_lossy()), winrar);
+        assert_eq!(resolve_rar_tool_path(&winrar.to_string_lossy()), rar);
 
         let _ = fs::remove_dir_all(&dir);
     }

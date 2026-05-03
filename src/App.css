@@ -462,6 +462,16 @@ h1 {
   gap: 8px;
 }
 
+.password-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.password-grid.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .option-toggle {
   min-height: 62px;
   display: grid;
