@@ -457,6 +457,14 @@ function App() {
       return;
     }
 
+    if (secondCompression && syncSevenzPassword && !rarPassword.trim()) {
+      const message = "7z 跟随 RAR 密码时，RAR 密码不能为空。";
+      setTaskStatus("error");
+      setStatusMessage(message);
+      appendLog(message);
+      return;
+    }
+
     if (volumeSizeError) {
       setTaskStatus("error");
       setStatusMessage(volumeSizeError);
@@ -754,7 +762,9 @@ function App() {
                     type="password"
                     value={rarPassword}
                     onChange={(event) => setRarPassword(event.currentTarget.value)}
-                    placeholder="不填写则不加密 RAR"
+                    placeholder={
+                      secondCompression && syncSevenzPassword ? "跟随 7z 时必填" : "不填写则不加密 RAR"
+                    }
                   />
                 </label>
 
