@@ -357,6 +357,8 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
         let verify_args = vec![
             OsString::from("t"),
             OsString::from("-t7z"),
+            OsString::from("-bb0"),
+            OsString::from("-bd"),
             OsString::from(format!("-p{password}")),
             OsString::from("-y"),
             sevenz_output.as_os_str().to_os_string(),
@@ -632,6 +634,8 @@ fn build_rar_args(
         OsString::from("-ep1"),
         OsString::from("-r"),
         OsString::from("-t"),
+        OsString::from("-idq"),
+        OsString::from("-y"),
         OsString::from("-x*.tmp"),
         OsString::from("-x*.temp"),
         OsString::from("-x*~"),
@@ -669,6 +673,8 @@ fn build_7z_args(sevenz_output: &Path, rar_files: &[PathBuf], password: &str) ->
         OsString::from("-m0=lzma2"),
         OsString::from("-md=64m"),
         OsString::from("-ms=on"),
+        OsString::from("-bb0"),
+        OsString::from("-bd"),
         OsString::from(format!("-p{password}")),
         OsString::from("-mhe=on"),
         OsString::from("-y"),
@@ -1093,6 +1099,8 @@ mod tests {
         .expect("RAR args should build");
 
         assert!(args.iter().any(|arg| arg == "-t"));
+        assert!(args.iter().any(|arg| arg == "-idq"));
+        assert!(args.iter().any(|arg| arg == "-y"));
     }
 
     #[test]
@@ -1269,6 +1277,8 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "-t7z"));
         assert!(args.iter().any(|arg| arg == "-mx=9"));
         assert!(args.iter().any(|arg| arg == "-m0=lzma2"));
+        assert!(args.iter().any(|arg| arg == "-bb0"));
+        assert!(args.iter().any(|arg| arg == "-bd"));
         assert!(args.iter().any(|arg| arg == "-mhe=on"));
         assert!(args.iter().any(|arg| arg == "-y"));
     }

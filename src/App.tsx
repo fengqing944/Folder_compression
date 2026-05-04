@@ -547,6 +547,19 @@ function App() {
     }
   }
 
+  async function openResultLocation() {
+    if (!report) return;
+
+    const target = report.sevenzFile ?? report.rarFiles[0] ?? report.outputDirectory;
+    try {
+      await revealItemInDir(target);
+    } catch (error) {
+      appendLog(`打开结果失败：${String(error)}`);
+      setTaskStatus("error");
+      setStatusMessage(`打开结果失败：${String(error)}`);
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -854,7 +867,7 @@ function App() {
                 <button
                   className="secondary-button path-check-button"
                   type="button"
-                  onClick={() => revealItemInDir(report.sevenzFile ?? report.rarFiles[0] ?? report.outputDirectory)}
+                  onClick={openResultLocation}
                 >
                   <FolderOpen size={17} />
                   打开结果目录
@@ -889,7 +902,7 @@ function App() {
           <button
             className="secondary-button"
             type="button"
-            onClick={() => revealItemInDir(report.sevenzFile ?? report.rarFiles[0] ?? report.outputDirectory)}
+            onClick={openResultLocation}
           >
             <FolderOpen size={17} />
             打开结果
