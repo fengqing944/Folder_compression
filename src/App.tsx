@@ -82,6 +82,8 @@ type CompressionReport = {
   }>;
 };
 
+type TaskStatus = "idle" | "loading" | "ready" | "running" | "success" | "error";
+
 const defaultWinrarPath = "G:\\Software\\WinRAR\\WinRAR.exe";
 const defaultSevenzPath = "C:\\Program Files\\7-Zip\\7z.exe";
 
@@ -113,6 +115,8 @@ function App() {
   const [tools, setTools] = useState<ToolStatus | null>(null);
   const [report, setReport] = useState<CompressionReport | null>(null);
   const [logs, setLogs] = useState<string[]>(["等待拖入文件夹。"]);
+  const [taskStatus, setTaskStatus] = useState<TaskStatus>("idle");
+  const [statusMessage, setStatusMessage] = useState("等待拖入文件夹。");
 
   const outputHint = useMemo(() => {
     if (!preview || !articleId.trim()) return "填写文章 ID 后预览输出位置";
@@ -141,10 +145,95 @@ function App() {
     );
   }, [prefixRules, ruleSearch]);
 
+  const compressionInputsSignature = useMemo(
+    () =>
+      JSON.stringify({
+        sourcePath,
+        articleId,
+        winrarPath,
+        sevenzPath,
+        rarPassword,
+        encryptFileNames,
+        secondCompression,
+        deleteRar,
+        backgroundMode,
+        splitVolume,
+        createFolder,
+        forceCreateFolder,
+        volumeSize,
+        sevenzPassword,
+        prefixRules,
+      }),
+    [
+      articleId,
+      backgroundMode,
+      createFolder,
+      deleteRar,
+      encryptFileNames,
+      forceCreateFolder,
+      prefixRules,
+      rarPassword,
+      secondCompression,
+      sevenzPassword,
+      sevenzPath,
+      sourcePath,
+      splitVolume,
+      volumeSize,
+      winrarPath,
+    ],
+  );
+
+  const lastCompressionInputsSignature = useRef(compressionInputsSignature);
+
+  const statusLabel = useMemo(() => {
+    if (taskStatus === "loading") return "检查中";
+    if (taskStatus === "running") return "压缩中";
+    if (taskStatus === "success") return "已完成";
+    if (taskStatus === "error") return "需要处理";
+    return "就绪";
+  }, [taskStatus]);
+
+  const statusDetail = useMemo(() => {
+    if (taskStatus === "loading" || taskStatus === "error") {
+      return statusMessage;
+    }
+
+    if (taskStatus === "success" && report) {
+      return report.archiveStem;
+    }
+
+    if (preview) {
+      return archiveNameHint;
+    }
+
+    return statusMessage;
+  }, [archiveNameHint, preview, report, statusMessage, taskStatus]);
+
+  const statusDotClass = useMemo(() => {
+    if (taskStatus === "loading" || taskStatus === "running") return "status-dot busy";
+    if (taskStatus === "error") return "status-dot error";
+    return "status-dot";
+  }, [taskStatus]);
+
   useEffect(() => {
     refreshTools();
     loadPrefixRules();
   }, []);
+
+  useEffect(() => {
+    if (lastCompressionInputsSignature.current === compressionInputsSignature) return;
+    lastCompressionInputsSignature.current = compressionInputsSignature;
+
+    if (running || taskStatus === "loading") return;
+
+    if (report) {
+      setReport(null);
+    }
+
+    if (taskStatus === "success" || taskStatus === "error") {
+      setTaskStatus(preview ? "ready" : "idle");
+    }
+  }, [compressionInputsSignature, preview, report, running, taskStatus]);
 
   useEffect(() => {
     if (!secondCompression) {
@@ -312,20 +401,30 @@ function App() {
     const requestId = folderRequestId.current + 1;
     folderRequestId.current = requestId;
     setSourcePath(path);
+    setPreview(null);
+    setPrefixPreview(null);
+    setReport(null);
+    setTaskStatus("loading");
+    setStatusMessage(`正在检查：${path}`);
 
     try {
       const nextPreview = await invoke<FolderPreview>("inspect_folder", { path });
       if (requestId !== folderRequestId.current) return;
 
       setPreview(nextPreview);
+      setTaskStatus("ready");
+      setStatusMessage(`已选择：${nextPreview.name}`);
       if (announce) {
-        setReport(null);
         appendLog(`已选择：${nextPreview.name}（${formatSize(nextPreview.sizeBytes)}）`);
       }
     } catch (error) {
       if (requestId !== folderRequestId.current) return;
 
+      setSourcePath("");
       setPreview(null);
+      setPrefixPreview(null);
+      setTaskStatus("error");
+      setStatusMessage(`选择失败：${String(error)}`);
       if (announce) {
         appendLog(`选择失败：${String(error)}`);
       }
@@ -337,21 +436,31 @@ function App() {
     setReport(null);
 
     if (!sourcePath.trim()) {
-      appendLog("请先拖入或选择一个文件夹。");
+      const message = "请先拖入或选择一个文件夹。";
+      setTaskStatus("error");
+      setStatusMessage(message);
+      appendLog(message);
       return;
     }
 
     if (!articleId.trim()) {
-      appendLog("文章 ID 必填。");
+      const message = "文章 ID 必填。";
+      setTaskStatus("error");
+      setStatusMessage(message);
+      appendLog(message);
       return;
     }
 
     if (volumeSizeError) {
+      setTaskStatus("error");
+      setStatusMessage(volumeSizeError);
       appendLog(volumeSizeError);
       return;
     }
 
     setRunning(true);
+    setTaskStatus("running");
+    setStatusMessage(archiveNameHint);
     appendLog("开始压缩任务。");
 
     try {
@@ -376,6 +485,8 @@ function App() {
       });
 
       setReport(result);
+      setTaskStatus("success");
+      setStatusMessage(result.archiveStem);
       appendLog(`压缩完成：${result.outputDirectory}`);
       appendLog(`压缩包名称：${result.archiveStem}`);
       if (result.cleanedOutputs.length > 0) {
@@ -396,6 +507,8 @@ function App() {
       void sendSystemNotification("压缩完成", `${result.archiveStem} 已生成。`);
     } catch (error) {
       const message = String(error);
+      setTaskStatus("error");
+      setStatusMessage(message);
       appendLog(`压缩失败：${message}`);
       void sendSystemNotification("压缩失败", "查看任务日志获取详情。");
     } finally {
@@ -409,6 +522,8 @@ function App() {
     setPreview(null);
     setPrefixPreview(null);
     setReport(null);
+    setTaskStatus("idle");
+    setStatusMessage("等待拖入文件夹。");
     setLogs(["等待拖入文件夹。"]);
   }
 
@@ -455,7 +570,12 @@ function App() {
             <RotateCcw size={17} />
             重置
           </button>
-          <button className="primary-button" type="button" onClick={startCompression} disabled={running}>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={startCompression}
+            disabled={running || taskStatus === "loading"}
+          >
             <Play size={18} fill="currentColor" />
             {running ? "压缩中..." : "开始压缩"}
           </button>
@@ -761,9 +881,9 @@ function App() {
 
       <footer className="statusbar">
         <div className="status-summary">
-          <span className={running ? "status-dot busy" : "status-dot"} />
-          <strong>{running ? "压缩中" : report ? "已完成" : "就绪"}</strong>
-          <span>{report?.archiveStem ?? archiveNameHint}</span>
+          <span className={statusDotClass} />
+          <strong>{statusLabel}</strong>
+          <span title={statusDetail}>{statusDetail}</span>
         </div>
         {report && (
           <button

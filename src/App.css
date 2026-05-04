@@ -725,6 +725,10 @@ h1 {
   background: #f59e0b;
 }
 
+.status-dot.error {
+  background: #dc2626;
+}
+
 @media (max-width: 1160px) {
   .task-layout,
   .prefix-layout,
