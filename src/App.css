@@ -400,6 +400,12 @@ h1 {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.13);
 }
 
+.field input:disabled {
+  color: #64748b;
+  background: #f1f5f9;
+  cursor: not-allowed;
+}
+
 .field input.invalid {
   border-color: #dc2626;
   background: #fff7f7;

@@ -15,6 +15,7 @@ import {
   FolderOpen,
   KeyRound,
   Layers,
+  Link2,
   Play,
   Plus,
   RotateCcw,
@@ -103,6 +104,7 @@ function App() {
   const [volumeSize, setVolumeSize] = useState("500m");
   const [rarPassword, setRarPassword] = useState("moeuu.xyz");
   const [encryptFileNames, setEncryptFileNames] = useState(true);
+  const [syncSevenzPassword, setSyncSevenzPassword] = useState(true);
   const [sevenzPassword, setSevenzPassword] = useState("moeuu.xyz");
   const [dragActive, setDragActive] = useState(false);
   const [running, setRunning] = useState(false);
@@ -145,6 +147,8 @@ function App() {
     );
   }, [prefixRules, ruleSearch]);
 
+  const effectiveSevenzPassword = syncSevenzPassword ? rarPassword : sevenzPassword;
+
   const compressionInputsSignature = useMemo(
     () =>
       JSON.stringify({
@@ -154,6 +158,7 @@ function App() {
         sevenzPath,
         rarPassword,
         encryptFileNames,
+        syncSevenzPassword,
         secondCompression,
         deleteRar,
         backgroundMode,
@@ -161,7 +166,7 @@ function App() {
         createFolder,
         forceCreateFolder,
         volumeSize,
-        sevenzPassword,
+        effectiveSevenzPassword,
         prefixRules,
       }),
     [
@@ -174,10 +179,11 @@ function App() {
       prefixRules,
       rarPassword,
       secondCompression,
-      sevenzPassword,
+      effectiveSevenzPassword,
       sevenzPath,
       sourcePath,
       splitVolume,
+      syncSevenzPassword,
       volumeSize,
       winrarPath,
     ],
@@ -479,7 +485,7 @@ function App() {
           createFolder,
           forceCreateFolder,
           volumeSize,
-          sevenzPassword,
+          sevenzPassword: effectiveSevenzPassword,
           prefixRules,
         },
       });
@@ -731,6 +737,14 @@ function App() {
                   checked={encryptFileNames}
                   onChange={setEncryptFileNames}
                 />
+                <OptionToggle
+                  icon={<Link2 size={17} />}
+                  title="7z 跟随密码"
+                  description="使用 RAR 密码"
+                  checked={syncSevenzPassword}
+                  disabled={!secondCompression}
+                  onChange={setSyncSevenzPassword}
+                />
               </div>
 
               <div className={`password-grid ${secondCompression ? "" : "single"}`}>
@@ -749,9 +763,10 @@ function App() {
                     <span>7z 密码</span>
                     <input
                       type="password"
-                      value={sevenzPassword}
+                      value={syncSevenzPassword ? rarPassword : sevenzPassword}
+                      disabled={syncSevenzPassword}
                       onChange={(event) => setSevenzPassword(event.currentTarget.value)}
-                      placeholder="不填写则使用默认密码"
+                      placeholder={syncSevenzPassword ? "跟随 RAR 密码" : "不填写则使用默认密码"}
                     />
                   </label>
                 )}
