@@ -139,7 +139,8 @@ h1 {
 
 .toolbar-button,
 .primary-button,
-.secondary-button {
+.secondary-button,
+.danger-button {
   min-height: 34px;
   display: inline-flex;
   align-items: center;
@@ -157,6 +158,17 @@ h1 {
   border: 1px solid #cfd8e3;
   color: #334155;
   background: #f8fafc;
+}
+
+.danger-button {
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  background: #fff1f2;
+}
+
+.danger-button:hover {
+  border-color: #fca5a5;
+  background: #ffe4e6;
 }
 
 .toolbar-button:hover,
@@ -183,7 +195,12 @@ h1 {
 }
 
 .primary-button:disabled,
-.secondary-button:disabled {
+.secondary-button:disabled,
+.toolbar-button:disabled,
+.danger-button:disabled,
+.drop-zone:disabled,
+.rule-form button:disabled,
+.rule-item button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -341,6 +358,12 @@ h1 {
   border-color: #2563eb;
   background: #eff6ff;
   transform: translateY(-1px);
+}
+
+.drop-zone:disabled:hover {
+  border-color: #aab7c5;
+  background: #f8fbff;
+  transform: none;
 }
 
 .drop-zone span {
@@ -733,6 +756,10 @@ h1 {
 
 .status-dot.error {
   background: #dc2626;
+}
+
+.status-dot.cancelled {
+  background: #64748b;
 }
 
 @media (max-width: 1160px) {

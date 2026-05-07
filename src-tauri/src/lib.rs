@@ -5,6 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tauri::Manager;
 use tauri_plugin_window_state::{StateFlags, WindowExt};
@@ -17,6 +18,18 @@ const DEFAULT_7Z_PATH: &str = r"C:\Program Files\7-Zip\7z.exe";
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const SPLIT_THRESHOLD_BYTES: u64 = 500 * 1024 * 1024;
 const PREFIX_RULES_FILE: &str = "prefix-rules.json";
+
+#[derive(Default)]
+struct CompressionRuntime {
+    state: Mutex<CompressionRuntimeState>,
+}
+
+#[derive(Default)]
+struct CompressionRuntimeState {
+    running: bool,
+    cancel_requested: bool,
+    current_pid: Option<u32>,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -243,13 +256,49 @@ fn preview_prefix(
 }
 
 #[tauri::command]
-async fn compress_folder(options: CompressionOptions) -> Result<CompressionReport, String> {
-    tauri::async_runtime::spawn_blocking(move || compress_folder_blocking(options))
+async fn compress_folder(
+    options: CompressionOptions,
+    runtime: tauri::State<'_, Arc<CompressionRuntime>>,
+) -> Result<CompressionReport, String> {
+    let runtime = runtime.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || compress_folder_blocking(options, runtime))
         .await
         .map_err(|err| format!("压缩任务中断：{err}"))?
 }
 
-fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionReport, String> {
+#[tauri::command]
+fn cancel_compression(runtime: tauri::State<'_, Arc<CompressionRuntime>>) -> Result<(), String> {
+    let pid = {
+        let mut state = lock_runtime(runtime.inner().as_ref())?;
+        if !state.running {
+            return Err("当前没有正在运行的压缩任务".to_string());
+        }
+
+        state.cancel_requested = true;
+        state.current_pid
+    };
+
+    if let Some(pid) = pid {
+        terminate_process(pid)?;
+    }
+
+    Ok(())
+}
+
+fn compress_folder_blocking(
+    options: CompressionOptions,
+    runtime: Arc<CompressionRuntime>,
+) -> Result<CompressionReport, String> {
+    begin_compression(runtime.as_ref())?;
+    let result = compress_folder_inner(options, runtime.as_ref());
+    finish_compression(runtime.as_ref());
+    result
+}
+
+fn compress_folder_inner(
+    options: CompressionOptions,
+    runtime: &CompressionRuntime,
+) -> Result<CompressionReport, String> {
     let source_path = normalize_path(&options.source_path);
     ensure_folder(&source_path)?;
 
@@ -274,7 +323,11 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
         ));
     }
 
+    check_cancel_requested(runtime)?;
+
     let folder_size_bytes = folder_size(&source_path)?;
+    check_cancel_requested(runtime)?;
+
     let used_split_volume = options.split_volume && folder_size_bytes > SPLIT_THRESHOLD_BYTES;
     let should_create_folder =
         options.create_folder || options.force_create_folder || used_split_volume;
@@ -309,6 +362,13 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
     let cleaned_outputs =
         cleanup_previous_outputs(&output_dir, &archive_base, &rar_output, &sevenz_output)?;
     let rar_password = options.rar_password.trim();
+    check_cancelled_with_cleanup(
+        runtime,
+        &output_dir,
+        &archive_base,
+        &rar_output,
+        &sevenz_output,
+    )?;
 
     let rar_args = build_rar_args(
         &options,
@@ -317,7 +377,7 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
         &source_path,
         used_split_volume,
     )?;
-    let rar_step = run_command(
+    let rar_step = match run_command(
         "RAR",
         &winrar_path,
         &rar_args,
@@ -327,13 +387,34 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
         } else {
             Some(rar_password)
         },
-    )?;
+        runtime,
+    ) {
+        Ok(step) => step,
+        Err(err) => {
+            if is_cancel_requested(runtime) {
+                return Err(cleanup_cancelled_outputs(
+                    &output_dir,
+                    &archive_base,
+                    &rar_output,
+                    &sevenz_output,
+                ));
+            }
+            return Err(err);
+        }
+    };
     steps.push(rar_step);
 
     let rar_files = collect_rar_outputs(&output_dir, &archive_base, &rar_output)?;
     if rar_files.is_empty() {
         return Err("RAR 已结束，但没有找到生成的 RAR 文件".to_string());
     }
+    check_cancelled_with_cleanup(
+        runtime,
+        &output_dir,
+        &archive_base,
+        &rar_output,
+        &sevenz_output,
+    )?;
 
     let mut sevenz_file = None;
     let mut deleted_rar = false;
@@ -345,14 +426,35 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
             options.sevenz_password.trim()
         };
         let sevenz_args = build_7z_args(&sevenz_output, &rar_files, password);
-        let sevenz_step = run_command(
+        let sevenz_step = match run_command(
             "7-Zip",
             &sevenz_path,
             &sevenz_args,
             options.background_mode,
             Some(password),
-        )?;
+            runtime,
+        ) {
+            Ok(step) => step,
+            Err(err) => {
+                if is_cancel_requested(runtime) {
+                    return Err(cleanup_cancelled_outputs(
+                        &output_dir,
+                        &archive_base,
+                        &rar_output,
+                        &sevenz_output,
+                    ));
+                }
+                return Err(err);
+            }
+        };
         steps.push(sevenz_step);
+        check_cancelled_with_cleanup(
+            runtime,
+            &output_dir,
+            &archive_base,
+            &rar_output,
+            &sevenz_output,
+        )?;
 
         let verify_args = vec![
             OsString::from("t"),
@@ -363,14 +465,35 @@ fn compress_folder_blocking(options: CompressionOptions) -> Result<CompressionRe
             OsString::from("-y"),
             sevenz_output.as_os_str().to_os_string(),
         ];
-        let verify_step = run_command(
+        let verify_step = match run_command(
             "7-Zip 验证",
             &sevenz_path,
             &verify_args,
             options.background_mode,
             Some(password),
-        )?;
+            runtime,
+        ) {
+            Ok(step) => step,
+            Err(err) => {
+                if is_cancel_requested(runtime) {
+                    return Err(cleanup_cancelled_outputs(
+                        &output_dir,
+                        &archive_base,
+                        &rar_output,
+                        &sevenz_output,
+                    ));
+                }
+                return Err(err);
+            }
+        };
         steps.push(verify_step);
+        check_cancelled_with_cleanup(
+            runtime,
+            &output_dir,
+            &archive_base,
+            &rar_output,
+            &sevenz_output,
+        )?;
 
         sevenz_file = Some(sevenz_output.to_string_lossy().to_string());
 
@@ -688,13 +811,115 @@ fn build_7z_args(sevenz_output: &Path, rar_files: &[PathBuf], password: &str) ->
     args
 }
 
+fn lock_runtime(
+    runtime: &CompressionRuntime,
+) -> Result<MutexGuard<'_, CompressionRuntimeState>, String> {
+    runtime
+        .state
+        .lock()
+        .map_err(|_| "压缩状态锁定失败".to_string())
+}
+
+fn begin_compression(runtime: &CompressionRuntime) -> Result<(), String> {
+    let mut state = lock_runtime(runtime)?;
+    if state.running {
+        return Err("已有压缩任务正在运行".to_string());
+    }
+
+    state.running = true;
+    state.cancel_requested = false;
+    state.current_pid = None;
+    Ok(())
+}
+
+fn finish_compression(runtime: &CompressionRuntime) {
+    if let Ok(mut state) = runtime.state.lock() {
+        state.running = false;
+        state.cancel_requested = false;
+        state.current_pid = None;
+    }
+}
+
+fn set_current_pid(runtime: &CompressionRuntime, pid: Option<u32>) -> Result<(), String> {
+    let mut state = lock_runtime(runtime)?;
+    state.current_pid = pid;
+    Ok(())
+}
+
+fn is_cancel_requested(runtime: &CompressionRuntime) -> bool {
+    runtime
+        .state
+        .lock()
+        .map(|state| state.cancel_requested)
+        .unwrap_or(false)
+}
+
+fn check_cancel_requested(runtime: &CompressionRuntime) -> Result<(), String> {
+    if is_cancel_requested(runtime) {
+        Err("压缩已取消。".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn check_cancelled_with_cleanup(
+    runtime: &CompressionRuntime,
+    output_dir: &Path,
+    archive_base: &str,
+    rar_output: &Path,
+    sevenz_output: &Path,
+) -> Result<(), String> {
+    if is_cancel_requested(runtime) {
+        Err(cleanup_cancelled_outputs(
+            output_dir,
+            archive_base,
+            rar_output,
+            sevenz_output,
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn cleanup_cancelled_outputs(
+    output_dir: &Path,
+    archive_base: &str,
+    rar_output: &Path,
+    sevenz_output: &Path,
+) -> String {
+    match cleanup_previous_outputs(output_dir, archive_base, rar_output, sevenz_output) {
+        Ok(cleaned) if cleaned.is_empty() => "压缩已取消。".to_string(),
+        Ok(cleaned) => format!("压缩已取消，已清理本次未完成输出：{} 个。", cleaned.len()),
+        Err(err) => format!("压缩已取消，但清理本次未完成输出失败：{err}"),
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process(pid: u32) -> Result<(), String> {
+    let mut command = Command::new("taskkill");
+    command.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    command.creation_flags(CREATE_NO_WINDOW);
+    let _ = command
+        .output()
+        .map_err(|err| format!("取消压缩失败，无法终止进程 {pid}：{err}"))?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn terminate_process(_pid: u32) -> Result<(), String> {
+    Ok(())
+}
+
 fn run_command(
     name: &str,
     program: &Path,
     args: &[OsString],
     hidden: bool,
     password: Option<&str>,
+    runtime: &CompressionRuntime,
 ) -> Result<CommandStep, String> {
+    check_cancel_requested(runtime)?;
+
     let command_line = render_command(program, args, password);
     let mut command = Command::new(program);
     command
@@ -707,9 +932,18 @@ fn run_command(
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let output = command
-        .output()
+    let child = command
+        .spawn()
         .map_err(|err| format!("{name} 启动失败：{command_line}\n{err}"))?;
+
+    let pid = child.id();
+    set_current_pid(runtime, Some(pid))?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("{name} 执行中断：{command_line}\n{err}"));
+    set_current_pid(runtime, None)?;
+    let output = output?;
 
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -999,6 +1233,11 @@ fn bytes_to_mb(bytes: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    use std::{
+        thread,
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn matches_custom_prefix_and_composes_archive_name() {
@@ -1282,6 +1521,57 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "-mhe=on"));
         assert!(args.iter().any(|arg| arg == "-y"));
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_command_can_be_cancelled() {
+        let runtime = Arc::new(CompressionRuntime::default());
+        begin_compression(runtime.as_ref()).expect("task should start");
+
+        let worker_runtime = runtime.clone();
+        let args = vec![
+            OsString::from("-NoProfile"),
+            OsString::from("-Command"),
+            OsString::from("Start-Sleep -Seconds 10"),
+        ];
+        let handle = thread::spawn(move || {
+            run_command(
+                "取消测试",
+                Path::new("powershell"),
+                &args,
+                true,
+                None,
+                worker_runtime.as_ref(),
+            )
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let pid = loop {
+            if let Some(pid) = lock_runtime(runtime.as_ref())
+                .expect("runtime should lock")
+                .current_pid
+            {
+                break pid;
+            }
+
+            if Instant::now() >= deadline {
+                panic!("child process should be tracked");
+            }
+
+            thread::sleep(Duration::from_millis(20));
+        };
+
+        {
+            let mut state = lock_runtime(runtime.as_ref()).expect("runtime should lock");
+            state.cancel_requested = true;
+        }
+        terminate_process(pid).expect("process should be terminated");
+
+        let result = handle.join().expect("worker should finish");
+        finish_compression(runtime.as_ref());
+
+        assert!(result.is_err());
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1307,8 +1597,10 @@ pub fn run() {
             save_prefix_rules,
             import_prefix_rules,
             preview_prefix,
-            compress_folder
+            compress_folder,
+            cancel_compression
         ])
+        .manage(Arc::new(CompressionRuntime::default()))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
