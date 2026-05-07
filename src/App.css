@@ -285,15 +285,11 @@ h1 {
 }
 
 .settings-layout {
-  grid-template-columns: minmax(330px, 0.45fr) minmax(460px, 1fr);
+  grid-template-columns: minmax(245px, 0.75fr) minmax(285px, 0.9fr) minmax(300px, 1.3fr);
 }
 
 .settings-stack {
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: contents;
 }
 
 .module {
@@ -502,7 +498,7 @@ h1 {
 }
 
 .notification-options {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .password-grid {
@@ -531,6 +527,18 @@ h1 {
     border-color 140ms ease,
     background 140ms ease,
     box-shadow 140ms ease;
+}
+
+.notification-module .option-toggle {
+  min-height: 54px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 7px;
+  padding: 8px;
+}
+
+.notification-module .option-icon {
+  width: 30px;
+  height: 30px;
 }
 
 .option-toggle input {
@@ -824,9 +832,12 @@ h1 {
 
 @media (max-width: 1160px) {
   .task-layout,
-  .prefix-layout,
-  .settings-layout {
+  .prefix-layout {
     grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+  }
+
+  .settings-layout {
+    grid-template-columns: minmax(230px, 0.75fr) minmax(270px, 0.9fr) minmax(290px, 1.15fr);
   }
 
   .rule-list {
