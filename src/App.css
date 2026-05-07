@@ -722,7 +722,7 @@ h1 {
 
 .notification-status-row {
   display: grid;
-  grid-template-columns: minmax(86px, 1fr) auto auto;
+  grid-template-columns: minmax(86px, 1fr) auto;
   gap: 8px;
   align-items: center;
 }

@@ -2,16 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  isPermissionGranted,
-  requestPermission,
-  sendNotification,
-} from "@tauri-apps/plugin-notification";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   Archive,
   Bell,
-  BellRing,
   CheckCircle2,
   FolderArchive,
   FolderOpen,
@@ -88,7 +82,6 @@ type CompressionReport = {
 
 type TaskStatus = "idle" | "loading" | "ready" | "running" | "cancelling" | "success" | "cancelled" | "error";
 type NotificationKind = "success" | "failure" | "cancelled";
-type NotificationPermissionState = NotificationPermission | "checking" | "not_granted";
 
 type NotificationSettings = {
   enabled: boolean;
@@ -136,8 +129,6 @@ function App() {
   const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(
     loadNotificationSettings,
   );
-  const [notificationPermission, setNotificationPermission] =
-    useState<NotificationPermissionState>("checking");
   const [notificationBusy, setNotificationBusy] = useState(false);
 
   const outputHint = useMemo(() => {
@@ -248,16 +239,6 @@ function App() {
     return "status-dot";
   }, [taskStatus]);
 
-  const notificationPermissionLabel = useMemo(
-    () => getNotificationPermissionLabel(notificationPermission),
-    [notificationPermission],
-  );
-
-  const notificationPermissionClass = useMemo(
-    () => getNotificationPermissionClass(notificationPermission),
-    [notificationPermission],
-  );
-
   useEffect(() => {
     taskLockedRef.current = taskLocked;
   }, [taskLocked]);
@@ -265,7 +246,6 @@ function App() {
   useEffect(() => {
     refreshTools();
     loadPrefixRules();
-    void refreshNotificationPermission();
   }, []);
 
   useEffect(() => {
@@ -629,71 +609,13 @@ function App() {
     setLogs((current) => [`${time}  ${message}`, ...current].slice(0, 80));
   }
 
-  async function refreshNotificationPermission(announce = false) {
-    setNotificationBusy(true);
-    setNotificationPermission("checking");
-
-    try {
-      const granted = await isPermissionGranted();
-      setNotificationPermission(granted ? "granted" : "not_granted");
-      if (announce) {
-        appendLog(granted ? "系统通知权限已允许。" : "系统通知权限尚未允许。");
-      }
-      return granted;
-    } catch (error) {
-      setNotificationPermission("not_granted");
-      appendLog(`系统通知权限检查失败：${String(error)}`);
-      return false;
-    } finally {
-      setNotificationBusy(false);
-    }
-  }
-
-  async function requestNotificationAccess() {
-    setNotificationBusy(true);
-
-    try {
-      const permission = await requestPermission();
-      setNotificationPermission(permission === "default" ? "not_granted" : permission);
-      appendLog(permission === "granted" ? "系统通知权限已允许。" : "系统通知权限未允许。");
-      return permission === "granted";
-    } catch (error) {
-      setNotificationPermission("not_granted");
-      appendLog(`系统通知权限请求失败：${String(error)}`);
-      return false;
-    } finally {
-      setNotificationBusy(false);
-    }
-  }
-
-  async function ensureNotificationPermission() {
-    try {
-      let granted = await isPermissionGranted();
-      setNotificationPermission(granted ? "granted" : "not_granted");
-      if (!granted) {
-        const permission = await requestPermission();
-        granted = permission === "granted";
-        setNotificationPermission(permission === "default" ? "not_granted" : permission);
-      }
-
-      return granted;
-    } catch (error) {
-      appendLog(`系统通知发送失败：${String(error)}`);
-      setNotificationPermission("not_granted");
-      return false;
-    }
-  }
-
   async function sendSystemNotification(kind: NotificationKind, title: string, body: string) {
     if (!shouldSendNotification(notificationSettings, kind)) return;
 
-    const granted = await ensureNotificationPermission();
-    if (granted) {
-      try {
-        sendNotification({ title, body });
-      } catch (error) {
-        appendLog(`系统通知发送失败：${String(error)}`);
-      }
+    try {
+      await invoke("send_task_notification", { title, body });
+    } catch (error) {
+      appendLog(`系统通知发送失败：${String(error)}`);
     }
   }
 
@@ -703,20 +625,17 @@ function App() {
       return;
     }
 
-    const granted = await ensureNotificationPermission();
-    if (!granted) {
-      appendLog("系统通知未授权，测试通知未发送。");
-      return;
-    }
-
+    setNotificationBusy(true);
     try {
-      sendNotification({
+      await invoke("send_task_notification", {
         title: "文件夹压缩工具",
         body: "任务通知可以正常发送。",
       });
       appendLog("已发送测试通知。");
     } catch (error) {
       appendLog(`系统通知发送失败：${String(error)}`);
+    } finally {
+      setNotificationBusy(false);
     }
   }
 
@@ -1109,22 +1028,13 @@ function App() {
                 <ModuleHeader
                   index="通知"
                   title="任务通知"
-                  detail={notificationSettings.enabled ? notificationPermissionLabel : "已关闭"}
+                  detail={notificationSettings.enabled ? "由系统通知发送" : "已关闭"}
                 />
 
                 <div className="notification-status-row">
-                  <span className={`permission-pill ${notificationSettings.enabled ? notificationPermissionClass : "neutral"}`}>
-                    {notificationSettings.enabled ? notificationPermissionLabel : "已关闭"}
+                  <span className={`permission-pill ${notificationSettings.enabled ? "ok" : "neutral"}`}>
+                    {notificationSettings.enabled ? "系统通知" : "已关闭"}
                   </span>
-                  <button
-                    className="toolbar-button compact-button"
-                    type="button"
-                    onClick={() => requestNotificationAccess()}
-                    disabled={notificationBusy || !notificationSettings.enabled}
-                  >
-                    <BellRing size={15} />
-                    请求权限
-                  </button>
                   <button
                     className="secondary-button compact-button"
                     type="button"
@@ -1329,20 +1239,6 @@ function saveNotificationSettings(settings: NotificationSettings) {
 function shouldSendNotification(settings: NotificationSettings, kind: NotificationKind) {
   if (!settings.enabled) return false;
   return settings[kind];
-}
-
-function getNotificationPermissionLabel(permission: NotificationPermissionState) {
-  if (permission === "checking") return "检查中";
-  if (permission === "granted") return "已允许";
-  if (permission === "denied") return "已拒绝";
-  return "未授权";
-}
-
-function getNotificationPermissionClass(permission: NotificationPermissionState) {
-  if (permission === "granted") return "ok";
-  if (permission === "denied") return "bad";
-  if (permission === "checking") return "neutral";
-  return "warn";
 }
 
 function formatSize(bytes: number) {

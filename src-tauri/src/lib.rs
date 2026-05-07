@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use tauri::Manager;
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_window_state::{StateFlags, WindowExt};
 
 #[cfg(windows)]
@@ -283,6 +284,20 @@ fn cancel_compression(runtime: tauri::State<'_, Arc<CompressionRuntime>>) -> Res
     }
 
     Ok(())
+}
+
+#[tauri::command]
+fn send_task_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|err| format!("系统通知发送失败：{err}"))
 }
 
 fn compress_folder_blocking(
@@ -1598,7 +1613,8 @@ pub fn run() {
             import_prefix_rules,
             preview_prefix,
             compress_folder,
-            cancel_compression
+            cancel_compression,
+            send_task_notification
         ])
         .manage(Arc::new(CompressionRuntime::default()))
         .run(tauri::generate_context!())
