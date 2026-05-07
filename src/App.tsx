@@ -10,6 +10,8 @@ import {
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   Archive,
+  Bell,
+  BellRing,
   CheckCircle2,
   FolderArchive,
   FolderOpen,
@@ -20,6 +22,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Send,
   Settings2,
   ShieldCheck,
   Tag,
@@ -84,9 +87,19 @@ type CompressionReport = {
 };
 
 type TaskStatus = "idle" | "loading" | "ready" | "running" | "cancelling" | "success" | "cancelled" | "error";
+type NotificationKind = "success" | "failure" | "cancelled";
+type NotificationPermissionState = NotificationPermission | "checking" | "not_granted";
+
+type NotificationSettings = {
+  enabled: boolean;
+  success: boolean;
+  failure: boolean;
+  cancelled: boolean;
+};
 
 const defaultWinrarPath = "G:\\Software\\WinRAR\\WinRAR.exe";
 const defaultSevenzPath = "C:\\Program Files\\7-Zip\\7z.exe";
+const notificationSettingsStorageKey = "folder-compression.notification-settings.v1";
 
 function App() {
   const folderRequestId = useRef(0);
@@ -120,6 +133,12 @@ function App() {
   const [logs, setLogs] = useState<string[]>(["等待拖入文件夹。"]);
   const [taskStatus, setTaskStatus] = useState<TaskStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("等待拖入文件夹。");
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(
+    loadNotificationSettings,
+  );
+  const [notificationPermission, setNotificationPermission] =
+    useState<NotificationPermissionState>("checking");
+  const [notificationBusy, setNotificationBusy] = useState(false);
 
   const outputHint = useMemo(() => {
     if (!preview || !articleId.trim()) return "填写文章 ID 后预览输出位置";
@@ -229,6 +248,16 @@ function App() {
     return "status-dot";
   }, [taskStatus]);
 
+  const notificationPermissionLabel = useMemo(
+    () => getNotificationPermissionLabel(notificationPermission),
+    [notificationPermission],
+  );
+
+  const notificationPermissionClass = useMemo(
+    () => getNotificationPermissionClass(notificationPermission),
+    [notificationPermission],
+  );
+
   useEffect(() => {
     taskLockedRef.current = taskLocked;
   }, [taskLocked]);
@@ -236,7 +265,12 @@ function App() {
   useEffect(() => {
     refreshTools();
     loadPrefixRules();
+    void refreshNotificationPermission();
   }, []);
+
+  useEffect(() => {
+    saveNotificationSettings(notificationSettings);
+  }, [notificationSettings]);
 
   useEffect(() => {
     if (lastCompressionInputsSignature.current === compressionInputsSignature) return;
@@ -540,14 +574,18 @@ function App() {
       if (result.deletedRar) {
         appendLog("已删除中间 RAR 文件。");
       }
-      void sendSystemNotification("压缩完成", `${result.archiveStem} 已生成。`);
+      void sendSystemNotification("success", "压缩完成", `${result.archiveStem} 已生成。`);
     } catch (error) {
       const message = String(error);
       const cancelled = message.includes("压缩已取消");
       setTaskStatus(cancelled ? "cancelled" : "error");
       setStatusMessage(message);
       appendLog(cancelled ? message : `压缩失败：${message}`);
-      void sendSystemNotification(cancelled ? "压缩已取消" : "压缩失败", cancelled ? message : "查看任务日志获取详情。");
+      void sendSystemNotification(
+        cancelled ? "cancelled" : "failure",
+        cancelled ? "压缩已取消" : "压缩失败",
+        cancelled ? message : "查看任务日志获取详情。",
+      );
     } finally {
       setRunning(false);
     }
@@ -591,19 +629,99 @@ function App() {
     setLogs((current) => [`${time}  ${message}`, ...current].slice(0, 80));
   }
 
-  async function sendSystemNotification(title: string, body: string) {
+  async function refreshNotificationPermission(announce = false) {
+    setNotificationBusy(true);
+    setNotificationPermission("checking");
+
+    try {
+      const granted = await isPermissionGranted();
+      setNotificationPermission(granted ? "granted" : "not_granted");
+      if (announce) {
+        appendLog(granted ? "系统通知权限已允许。" : "系统通知权限尚未允许。");
+      }
+      return granted;
+    } catch (error) {
+      setNotificationPermission("not_granted");
+      appendLog(`系统通知权限检查失败：${String(error)}`);
+      return false;
+    } finally {
+      setNotificationBusy(false);
+    }
+  }
+
+  async function requestNotificationAccess() {
+    setNotificationBusy(true);
+
+    try {
+      const permission = await requestPermission();
+      setNotificationPermission(permission === "default" ? "not_granted" : permission);
+      appendLog(permission === "granted" ? "系统通知权限已允许。" : "系统通知权限未允许。");
+      return permission === "granted";
+    } catch (error) {
+      setNotificationPermission("not_granted");
+      appendLog(`系统通知权限请求失败：${String(error)}`);
+      return false;
+    } finally {
+      setNotificationBusy(false);
+    }
+  }
+
+  async function ensureNotificationPermission() {
     try {
       let granted = await isPermissionGranted();
+      setNotificationPermission(granted ? "granted" : "not_granted");
       if (!granted) {
-        granted = (await requestPermission()) === "granted";
+        const permission = await requestPermission();
+        granted = permission === "granted";
+        setNotificationPermission(permission === "default" ? "not_granted" : permission);
       }
 
-      if (granted) {
+      return granted;
+    } catch (error) {
+      appendLog(`系统通知发送失败：${String(error)}`);
+      setNotificationPermission("not_granted");
+      return false;
+    }
+  }
+
+  async function sendSystemNotification(kind: NotificationKind, title: string, body: string) {
+    if (!shouldSendNotification(notificationSettings, kind)) return;
+
+    const granted = await ensureNotificationPermission();
+    if (granted) {
+      try {
         sendNotification({ title, body });
+      } catch (error) {
+        appendLog(`系统通知发送失败：${String(error)}`);
       }
+    }
+  }
+
+  async function testNotification() {
+    if (!notificationSettings.enabled) {
+      appendLog("任务通知已关闭，未发送测试通知。");
+      return;
+    }
+
+    const granted = await ensureNotificationPermission();
+    if (!granted) {
+      appendLog("系统通知未授权，测试通知未发送。");
+      return;
+    }
+
+    try {
+      sendNotification({
+        title: "文件夹压缩工具",
+        body: "任务通知可以正常发送。",
+      });
+      appendLog("已发送测试通知。");
     } catch (error) {
       appendLog(`系统通知发送失败：${String(error)}`);
     }
+  }
+
+  function updateNotificationSetting(key: keyof NotificationSettings, checked: boolean) {
+    setNotificationSettings((current) => ({ ...current, [key]: checked }));
   }
 
   async function openResultLocation() {
@@ -682,9 +800,9 @@ function App() {
         />
         <TabButton
           active={activeTab === "settings"}
-          detail="程序路径、运行日志、结果定位"
+          detail="程序路径、任务通知、运行日志"
           icon={<Settings2 size={18} />}
-          label="路径与日志"
+          label="设置与日志"
           onClick={() => setActiveTab("settings")}
         />
       </nav>
@@ -952,39 +1070,107 @@ function App() {
 
         {activeTab === "settings" && (
           <div className="settings-layout">
-            <section className="module path-module">
-              <ModuleHeader index="路径" title="程序路径" detail="可直接填写 exe，或填写安装目录" />
-              <label className="field compact">
-                <span>WinRAR/RAR</span>
-                <input
-                  value={winrarPath}
-                  disabled={taskLocked}
-                  onChange={(event) => setWinrarPath(event.currentTarget.value)}
-                />
-              </label>
-              <label className="field compact">
-                <span>7-Zip</span>
-                <input
-                  value={sevenzPath}
-                  disabled={taskLocked}
-                  onChange={(event) => setSevenzPath(event.currentTarget.value)}
-                />
-              </label>
-              <button className="toolbar-button path-check-button" type="button" onClick={refreshTools} disabled={taskLocked}>
-                <RotateCcw size={16} />
-                重新检查路径
-              </button>
-              {report && (
-                <button
-                  className="secondary-button path-check-button"
-                  type="button"
-                  onClick={openResultLocation}
-                >
-                  <FolderOpen size={17} />
-                  打开结果目录
+            <div className="settings-stack">
+              <section className="module path-module">
+                <ModuleHeader index="路径" title="程序路径" detail="可直接填写 exe，或填写安装目录" />
+                <label className="field compact">
+                  <span>WinRAR/RAR</span>
+                  <input
+                    value={winrarPath}
+                    disabled={taskLocked}
+                    onChange={(event) => setWinrarPath(event.currentTarget.value)}
+                  />
+                </label>
+                <label className="field compact">
+                  <span>7-Zip</span>
+                  <input
+                    value={sevenzPath}
+                    disabled={taskLocked}
+                    onChange={(event) => setSevenzPath(event.currentTarget.value)}
+                  />
+                </label>
+                <button className="toolbar-button path-check-button" type="button" onClick={refreshTools} disabled={taskLocked}>
+                  <RotateCcw size={16} />
+                  重新检查路径
                 </button>
-              )}
-            </section>
+                {report && (
+                  <button
+                    className="secondary-button path-check-button"
+                    type="button"
+                    onClick={openResultLocation}
+                  >
+                    <FolderOpen size={17} />
+                    打开结果目录
+                  </button>
+                )}
+              </section>
+
+              <section className="module notification-module">
+                <ModuleHeader
+                  index="通知"
+                  title="任务通知"
+                  detail={notificationSettings.enabled ? notificationPermissionLabel : "已关闭"}
+                />
+
+                <div className="notification-status-row">
+                  <span className={`permission-pill ${notificationSettings.enabled ? notificationPermissionClass : "neutral"}`}>
+                    {notificationSettings.enabled ? notificationPermissionLabel : "已关闭"}
+                  </span>
+                  <button
+                    className="toolbar-button compact-button"
+                    type="button"
+                    onClick={() => requestNotificationAccess()}
+                    disabled={notificationBusy || !notificationSettings.enabled}
+                  >
+                    <BellRing size={15} />
+                    请求权限
+                  </button>
+                  <button
+                    className="secondary-button compact-button"
+                    type="button"
+                    onClick={testNotification}
+                    disabled={notificationBusy || !notificationSettings.enabled}
+                  >
+                    <Send size={15} />
+                    测试
+                  </button>
+                </div>
+
+                <div className="option-grid notification-options">
+                  <OptionToggle
+                    icon={<Bell size={17} />}
+                    title="启用通知"
+                    description="任务结束时提醒"
+                    checked={notificationSettings.enabled}
+                    onChange={(checked) => updateNotificationSetting("enabled", checked)}
+                  />
+                  <OptionToggle
+                    icon={<CheckCircle2 size={17} />}
+                    title="成功通知"
+                    description="压缩完成"
+                    checked={notificationSettings.success}
+                    disabled={!notificationSettings.enabled}
+                    onChange={(checked) => updateNotificationSetting("success", checked)}
+                  />
+                  <OptionToggle
+                    icon={<ShieldCheck size={17} />}
+                    title="失败通知"
+                    description="压缩出错"
+                    checked={notificationSettings.failure}
+                    disabled={!notificationSettings.enabled}
+                    onChange={(checked) => updateNotificationSetting("failure", checked)}
+                  />
+                  <OptionToggle
+                    icon={<X size={17} />}
+                    title="取消通知"
+                    description="任务被取消"
+                    checked={notificationSettings.cancelled}
+                    disabled={!notificationSettings.enabled}
+                    onChange={(checked) => updateNotificationSetting("cancelled", checked)}
+                  />
+                </div>
+              </section>
+            </div>
 
             <section className="module log-module">
               <div className="module-title-row">
@@ -1106,6 +1292,57 @@ function sanitizePrefixInput(value: string) {
 
 function isValidVolumeSize(value: string) {
   return /^[1-9]\d*[bBkKmMgGtT]$/.test(value.trim());
+}
+
+function loadNotificationSettings(): NotificationSettings {
+  const defaults: NotificationSettings = {
+    enabled: true,
+    success: true,
+    failure: true,
+    cancelled: true,
+  };
+
+  try {
+    const raw = window.localStorage.getItem(notificationSettingsStorageKey);
+    if (!raw) return defaults;
+
+    const saved = JSON.parse(raw) as Partial<NotificationSettings>;
+    return {
+      enabled: typeof saved.enabled === "boolean" ? saved.enabled : defaults.enabled,
+      success: typeof saved.success === "boolean" ? saved.success : defaults.success,
+      failure: typeof saved.failure === "boolean" ? saved.failure : defaults.failure,
+      cancelled: typeof saved.cancelled === "boolean" ? saved.cancelled : defaults.cancelled,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveNotificationSettings(settings: NotificationSettings) {
+  try {
+    window.localStorage.setItem(notificationSettingsStorageKey, JSON.stringify(settings));
+  } catch {
+    // localStorage can fail in restricted webviews; notification defaults still work.
+  }
+}
+
+function shouldSendNotification(settings: NotificationSettings, kind: NotificationKind) {
+  if (!settings.enabled) return false;
+  return settings[kind];
+}
+
+function getNotificationPermissionLabel(permission: NotificationPermissionState) {
+  if (permission === "checking") return "检查中";
+  if (permission === "granted") return "已允许";
+  if (permission === "denied") return "已拒绝";
+  return "未授权";
+}
+
+function getNotificationPermissionClass(permission: NotificationPermissionState) {
+  if (permission === "granted") return "ok";
+  if (permission === "denied") return "bad";
+  if (permission === "checking") return "neutral";
+  return "warn";
 }
 
 function formatSize(bytes: number) {

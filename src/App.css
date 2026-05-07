@@ -177,7 +177,8 @@ h1 {
   background: #f1f5f9;
 }
 
-.toolbar-button.compact-button {
+.toolbar-button.compact-button,
+.secondary-button.compact-button {
   min-height: 30px;
   padding: 0 9px;
   font-size: 12px;
@@ -287,6 +288,14 @@ h1 {
   grid-template-columns: minmax(330px, 0.45fr) minmax(460px, 1fr);
 }
 
+.settings-stack {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .module {
   min-width: 0;
   min-height: 0;
@@ -298,6 +307,7 @@ h1 {
 .prefix-module,
 .log-module,
 .path-module,
+.notification-module,
 .prefix-preview-module {
   display: flex;
   flex-direction: column;
@@ -489,6 +499,10 @@ h1 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.notification-options {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .password-grid {
@@ -696,6 +710,52 @@ h1 {
 
 .path-check-button {
   align-self: flex-start;
+}
+
+.notification-status-row {
+  display: grid;
+  grid-template-columns: minmax(86px, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.permission-pill {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d6dde5;
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #475569;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.permission-pill.ok {
+  color: #146c43;
+  border-color: #b7dfc5;
+  background: #eef8f1;
+}
+
+.permission-pill.warn {
+  color: #936c10;
+  border-color: #f3d58d;
+  background: #fff8e6;
+}
+
+.permission-pill.bad {
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #fff1f2;
+}
+
+.permission-pill.neutral {
+  color: #475569;
+  border-color: #cfd8e3;
+  background: #f1f5f9;
 }
 
 .log-list {
