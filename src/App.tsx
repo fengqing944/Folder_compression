@@ -270,7 +270,10 @@ function App() {
   useEffect(() => {
     if (!secondCompression) {
       setDeleteRar(false);
+      return;
     }
+
+    setSplitVolume(false);
   }, [secondCompression]);
 
   useEffect(() => {
@@ -818,9 +821,9 @@ function App() {
                 <OptionToggle
                   icon={<Archive size={17} />}
                   title="分卷压缩"
-                  description="超过 500MB"
+                  description={secondCompression ? "二次压缩时关闭" : "超过 500MB"}
                   checked={splitVolume}
-                  disabled={taskLocked}
+                  disabled={taskLocked || secondCompression}
                   onChange={setSplitVolume}
                 />
                 <OptionToggle

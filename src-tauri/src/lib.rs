@@ -343,7 +343,9 @@ fn compress_folder_inner(
     let folder_size_bytes = folder_size(&source_path)?;
     check_cancel_requested(runtime)?;
 
-    let used_split_volume = options.split_volume && folder_size_bytes > SPLIT_THRESHOLD_BYTES;
+    let used_split_volume = options.split_volume
+        && !options.second_compression
+        && folder_size_bytes > SPLIT_THRESHOLD_BYTES;
     let should_create_folder =
         options.create_folder || options.force_create_folder || used_split_volume;
 
