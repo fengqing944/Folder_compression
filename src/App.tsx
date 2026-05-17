@@ -121,6 +121,7 @@ function App() {
   const [ruleKeyword, setRuleKeyword] = useState("");
   const [rulePrefix, setRulePrefix] = useState("");
   const [ruleSearch, setRuleSearch] = useState("");
+  const [prefixSaving, setPrefixSaving] = useState(false);
   const [tools, setTools] = useState<ToolStatus | null>(null);
   const [report, setReport] = useState<CompressionReport | null>(null);
   const [logs, setLogs] = useState<string[]>(["等待拖入文件夹。"]);
@@ -160,6 +161,7 @@ function App() {
 
   const effectiveSevenzPassword = syncSevenzPassword ? rarPassword : sevenzPassword;
   const taskLocked = running || taskStatus === "loading" || taskStatus === "cancelling";
+  const prefixLocked = taskLocked || prefixSaving;
 
   const compressionInputsSignature = useMemo(
     () =>
@@ -366,17 +368,21 @@ function App() {
   }
 
   async function persistPrefixRules(nextRules: PrefixRule[], message: string) {
+    setPrefixSaving(true);
+
     try {
       const saved = await invoke<PrefixRule[]>("save_prefix_rules", { rules: nextRules });
       setPrefixRules(saved);
-      appendLog(message);
+      appendLog(`${message}（共 ${saved.length} 条）`);
     } catch (error) {
       appendLog(`保存前缀规则失败：${String(error)}`);
+    } finally {
+      setPrefixSaving(false);
     }
   }
 
   async function addPrefixRule() {
-    if (taskLocked) return;
+    if (prefixLocked) return;
 
     const keyword = ruleKeyword.trim();
     const prefix = sanitizePrefixInput(rulePrefix);
@@ -397,7 +403,7 @@ function App() {
   }
 
   async function deletePrefixRule(keyword: string) {
-    if (taskLocked) return;
+    if (prefixLocked) return;
 
     const nextRules = prefixRules.filter(
       (rule) => rule.keyword.toLowerCase() !== keyword.toLowerCase(),
@@ -406,7 +412,7 @@ function App() {
   }
 
   async function importPrefixRules() {
-    if (taskLocked) return;
+    if (prefixLocked) return;
 
     const selected = await open({
       multiple: false,
@@ -416,6 +422,7 @@ function App() {
 
     if (typeof selected !== "string") return;
 
+    setPrefixSaving(true);
     try {
       const imported = await invoke<PrefixRule[]>("import_prefix_rules", {
         path: selected,
@@ -425,6 +432,8 @@ function App() {
       appendLog(`已导入前缀规则：${imported.length} 条。`);
     } catch (error) {
       appendLog(`导入前缀规则失败：${String(error)}`);
+    } finally {
+      setPrefixSaving(false);
     }
   }
 
@@ -898,13 +907,13 @@ function App() {
                 <div className="title-with-icon">
                   <Tag size={17} />
                   <span>压缩包前缀</span>
-                  <span className="count-badge">{prefixRules.length}</span>
+                  <span className="count-badge">{prefixSaving ? "保存中" : prefixRules.length}</span>
                 </div>
                 <button
                   className="toolbar-button compact-button"
                   type="button"
                   onClick={importPrefixRules}
-                  disabled={taskLocked}
+                  disabled={prefixLocked}
                 >
                   <Upload size={15} />
                   导入
@@ -915,7 +924,7 @@ function App() {
                 <input
                   placeholder="关键词，如 Nyako喵子"
                   value={ruleKeyword}
-                  disabled={taskLocked}
+                  disabled={prefixLocked}
                   onChange={(event) => setRuleKeyword(event.currentTarget.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") addPrefixRule();
@@ -924,13 +933,13 @@ function App() {
                 <input
                   placeholder="前缀，如 nyako"
                   value={rulePrefix}
-                  disabled={taskLocked}
+                  disabled={prefixLocked}
                   onChange={(event) => setRulePrefix(event.currentTarget.value)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") addPrefixRule();
                   }}
                 />
-                <button type="button" onClick={addPrefixRule} title="添加规则" disabled={taskLocked}>
+                <button type="button" onClick={addPrefixRule} title="添加规则" disabled={prefixLocked}>
                   <Plus size={15} />
                 </button>
               </div>
@@ -956,7 +965,7 @@ function App() {
                         type="button"
                         title="删除规则"
                         onClick={() => deletePrefixRule(rule.keyword)}
-                        disabled={taskLocked}
+                        disabled={prefixLocked}
                       >
                         <X size={15} />
                       </button>

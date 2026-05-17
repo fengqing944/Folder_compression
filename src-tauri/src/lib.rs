@@ -182,8 +182,7 @@ fn load_prefix_rules(app: tauri::AppHandle) -> Result<Vec<PrefixRule>, String> {
     if !path.exists() {
         let json = serde_json::to_string_pretty(&default_rules)
             .map_err(|err| format!("序列化默认前缀规则失败：{err}"))?;
-        fs::write(&path, json)
-            .map_err(|err| format!("保存默认前缀规则失败：{} ({err})", path.to_string_lossy()))?;
+        write_text_file_atomic(&path, &json, "保存默认前缀规则")?;
         return Ok(default_rules);
     }
 
@@ -195,12 +194,7 @@ fn load_prefix_rules(app: tauri::AppHandle) -> Result<Vec<PrefixRule>, String> {
     if merged_rules.len() != saved_rules.len() {
         let json = serde_json::to_string_pretty(&merged_rules)
             .map_err(|err| format!("序列化前缀规则失败：{err}"))?;
-        fs::write(&path, json).map_err(|err| {
-            format!(
-                "保存补全后的前缀规则失败：{} ({err})",
-                path.to_string_lossy()
-            )
-        })?;
+        write_text_file_atomic(&path, &json, "保存补全后的前缀规则")?;
     }
 
     Ok(merged_rules)
@@ -216,8 +210,7 @@ fn save_prefix_rules(
     let json = serde_json::to_string_pretty(&normalized)
         .map_err(|err| format!("序列化前缀规则失败：{err}"))?;
 
-    fs::write(&path, json)
-        .map_err(|err| format!("保存前缀规则失败：{} ({err})", path.to_string_lossy()))?;
+    write_text_file_atomic(&path, &json, "保存前缀规则")?;
 
     Ok(normalized)
 }
@@ -559,6 +552,25 @@ fn prefix_rules_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         )
     })?;
     Ok(config_dir.join(PREFIX_RULES_FILE))
+}
+
+fn write_text_file_atomic(path: &Path, content: &str, action: &str) -> Result<(), String> {
+    let temp_path = path.with_extension("json.tmp");
+    fs::write(&temp_path, content)
+        .map_err(|err| format!("{action}失败：{} ({err})", temp_path.to_string_lossy()))?;
+
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|err| format!("{action}失败：{} ({err})", path.to_string_lossy()))?;
+    }
+
+    fs::rename(&temp_path, path).map_err(|err| {
+        format!(
+            "{action}失败：{} -> {} ({err})",
+            temp_path.to_string_lossy(),
+            path.to_string_lossy()
+        )
+    })
 }
 
 fn default_prefix_rules() -> Result<Vec<PrefixRule>, String> {
@@ -1521,6 +1533,26 @@ mod tests {
         assert!(!sevenz.exists());
         assert!(!part.exists());
         assert!(unrelated.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_text_write_replaces_existing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "folder-compression-prefix-save-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+
+        let path = dir.join("prefix-rules.json");
+        fs::write(&path, "old").expect("initial file should be written");
+
+        write_text_file_atomic(&path, "new", "保存前缀规则").expect("atomic write should succeed");
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+        assert!(!path.with_extension("json.tmp").exists());
 
         let _ = fs::remove_dir_all(&dir);
     }
